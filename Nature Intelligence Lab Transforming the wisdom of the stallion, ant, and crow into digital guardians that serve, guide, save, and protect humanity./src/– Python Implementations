@@ -1,0 +1,329 @@
+src/__init__.py
+
+from .stallion_ops import StallionOpsController, StallionState
+from .ant_swarm import AntSwarmOptimizer
+from .crow_strategic import CrowStrategicMemory
+
+
+src/stallion_ops.py
+from enum import Enum
+import time
+from dataclasses import dataclass
+
+
+class StallionState(Enum):
+    SPRINT = "SPRINT"
+    PACE = "PACE"
+    RECOVER = "RECOVER"
+
+
+@dataclass
+class SystemVitals:
+    cpu_load: float        # 0–1
+    cpu_temp: float        # °C
+    mem_usage: float       # 0–1
+    io_pressure: float     # 0–1
+    risk_index: float      # 0–1
+
+
+class StallionOpsController:
+    """
+    STALLION OPS: nature-inspired operations controller.
+    Controls how aggressively the system should run.
+    """
+
+    def __init__(self):
+        self.fatigue = 0.0
+        self.state = StallionState.PACE
+
+    def decide_state(self, vitals: SystemVitals, mission_priority: str) -> StallionState:
+        # hard guardrails
+        if (
+            vitals.cpu_temp > 85
+            or vitals.mem_usage > 0.95
+            or self.fatigue > 0.85
+            or vitals.risk_index > 0.9
+        ):
+            return StallionState.RECOVER
+
+        if (
+            mission_priority == "CRITICAL"
+            and vitals.cpu_load < 0.85
+            and self.fatigue < 0.6
+        ):
+            return StallionState.SPRINT
+
+        return StallionState.PACE
+
+    def update_fatigue(self, vitals: SystemVitals, state: StallionState) -> None:
+        if state == StallionState.SPRINT:
+            self.fatigue += 0.08 + vitals.cpu_load * 0.02
+        elif state == StallionState.PACE:
+            self.fatigue += 0.01 + vitals.cpu_load * 0.005
+        else:  # RECOVER
+            self.fatigue -= 0.05
+
+        self.fatigue = max(0.0, min(1.0, self.fatigue))
+
+    def tick(self, vitals: SystemVitals, mission_priority: str) -> StallionState:
+        """
+        One control cycle. Returns chosen state.
+        """
+        self.state = self.decide_state(vitals, mission_priority)
+        self.update_fatigue(vitals, self.state)
+        return self.state
+
+
+
+⸻
+
+src/ant_swarm.py
+
+import random
+from dataclasses import dataclass
+from typing import List, Dict, Tuple
+
+
+@dataclass
+class Edge:
+    src: int
+    dst: int
+    cost: float
+
+
+class AntSwarmOptimizer:
+    """
+    Minimal Ant Colony Optimization (ACO) style solver for path problems.
+    Not tuned for production – reference / educational implementation.
+    """
+
+    def __init__(
+        self,
+        nodes: List[int],
+        edges: List[Edge],
+        alpha: float = 1.0,
+        beta: float = 2.0,
+        evaporation: float = 0.5,
+        ants: int = 10,
+    ):
+        self.nodes = nodes
+        self.edges = edges
+        self.alpha = alpha
+        self.beta = beta
+        self.evaporation = evaporation
+        self.ants = ants
+
+        self.pheromone: Dict[Tuple[int, int], float] = {}
+        self.dist: Dict[Tuple[int, int], float] = {}
+        for e in edges:
+            self.pheromone[(e.src, e.dst)] = 1.0
+            self.dist[(e.src, e.dst)] = e.cost
+
+    def _neighbors(self, node: int) -> List[int]:
+        return [e.dst for e in self.edges if e.src == node]
+
+    def _probabilities(self, current: int, unvisited: List[int]) -> List[Tuple[int, float]]:
+        probs = []
+        total = 0.0
+        for n in unvisited:
+            key = (current, n)
+            tau = self.pheromone.get(key, 0.01) ** self.alpha
+            eta = (1.0 / self.dist.get(key, 1.0)) ** self.beta
+            score = tau * eta
+            probs.append((n, score))
+            total += score
+        if total == 0:
+            return [(n, 1.0 / len(unvisited)) for n in unvisited]
+        return [(n, s / total) for n, s in probs]
+
+    def _choose(self, probs: List[Tuple[int, float]]) -> int:
+        r = random.random()
+        cumulative = 0.0
+        for n, p in probs:
+            cumulative += p
+            if r <= cumulative:
+                return n
+        return probs[-1][0]
+
+    def _single_ant_tour(self, start: int) -> Tuple[List[int], float]:
+        current = start
+        tour = [current]
+        unvisited = [n for n in self.nodes if n != start]
+        total_cost = 0.0
+
+        while unvisited:
+            probs = self._probabilities(current, unvisited)
+            nxt = self._choose(probs)
+            total_cost += self.dist[(current, nxt)]
+            current = nxt
+            tour.append(current)
+            unvisited.remove(current)
+
+        return tour, total_cost
+
+    def optimize(self, iterations: int = 20, start: int = 0):
+        best_tour = None
+        best_cost = float("inf")
+
+        for _ in range(iterations):
+            all_tours = []
+            # evaporation
+            for k in list(self.pheromone.keys()):
+                self.pheromone[k] *= (1.0 - self.evaporation)
+
+            for _ in range(self.ants):
+                tour, cost = self._single_ant_tour(start)
+                all_tours.append((tour, cost))
+                if cost < best_cost:
+                    best_cost = cost
+                    best_tour = tour
+
+                # deposit pheromone
+                deposit = 1.0 / (cost + 1e-6)
+                for i in range(len(tour) - 1):
+                    key = (tour[i], tour[i + 1])
+                    self.pheromone[key] = self.pheromone.get(key, 0.0) + deposit
+
+        return best_tour, best_cost
+
+
+
+⸻
+
+src/crow_strategic.py
+
+from dataclasses import dataclass, field
+from typing import Dict, Any, List, Tuple
+import random
+
+
+@dataclass
+class MemoryEntry:
+    reward: float
+    count: int = 1
+
+
+@dataclass
+class CrowStrategicMemory:
+    """
+    Crow-inspired strategy selector:
+    - remembers which actions were good or bad
+    - prefers actions with better historical reward
+    - can 'warn itself' about bad actions
+    """
+
+    decay: float = 0.98
+    exploration: float = 0.1
+    memory: Dict[Any, MemoryEntry] = field(default_factory=dict)
+
+    def record(self, action: Any, reward: float) -> None:
+        if action not in self.memory:
+            self.memory[action] = MemoryEntry(reward=reward, count=1)
+        else:
+            entry = self.memory[action]
+            # running average with slight decay
+            entry.reward = (entry.reward * entry.count + reward) / (entry.count + 1)
+            entry.count += 1
+
+    def decay_memory(self) -> None:
+        for a in list(self.memory.keys()):
+            self.memory[a].reward *= self.decay
+
+    def choose_action(self, possible_actions: List[Any]) -> Any:
+        self.decay_memory()
+
+        # exploration
+        if random.random() < self.exploration or not self.memory:
+            return random.choice(possible_actions)
+
+        # exploitation: weighted by learned reward
+        weights: List[Tuple[Any, float]] = []
+        total = 0.0
+        for a in possible_actions:
+            reward = self.memory.get(a, MemoryEntry(reward=0.0)).reward
+            # negative rewards become very low probability
+            w = max(0.01, reward + 1.0)
+            weights.append((a, w))
+            total += w
+
+        r = random.random() * total
+        cumulative = 0.0
+        for a, w in weights:
+            cumulative += w
+            if r <= cumulative:
+                return a
+        return weights[-1][0]
+
+
+
+examples/demo_all_algorithms.py
+
+from src import (
+    StallionOpsController,
+    StallionState,
+    SystemVitals,
+    AntSwarmOptimizer,
+    Edge,
+    CrowStrategicMemory,
+)
+import random
+
+
+def demo_stallion():
+    print("=== STALLION OPS DEMO ===")
+    ctrl = StallionOpsController()
+    for t in range(10):
+        vitals = SystemVitals(
+            cpu_load=random.uniform(0.2, 0.9),
+            cpu_temp=random.uniform(55, 90),
+            mem_usage=random.uniform(0.4, 0.95),
+            io_pressure=random.uniform(0.1, 0.8),
+            risk_index=random.uniform(0.0, 0.9),
+        )
+        state = ctrl.tick(vitals, mission_priority="CRITICAL")
+        print(f"t={t} state={state.value} fatigue={ctrl.fatigue:.2f}")
+
+
+def demo_ant():
+    print("\n=== ANT SWARM DEMO ===")
+    nodes = [0, 1, 2, 3]
+    edges = [
+        Edge(0, 1, 2.0),
+        Edge(0, 2, 4.0),
+        Edge(1, 2, 1.0),
+        Edge(1, 3, 7.0),
+        Edge(2, 3, 3.0),
+    ]
+    opt = AntSwarmOptimizer(nodes, edges, ants=8)
+    best_tour, best_cost = opt.optimize(iterations=15, start=0)
+    print(f"Best tour: {best_tour}, cost={best_cost:.2f}")
+
+
+def demo_crow():
+    print("\n=== CROW STRATEGIC DEMO ===")
+    memory = CrowStrategicMemory()
+    actions = ["A", "B", "C"]
+
+    # simulate environment: A usually good, B random, C usually bad
+    for t in range(30):
+        action = memory.choose_action(actions)
+        if action == "A":
+            reward = random.uniform(0.5, 1.0)
+        elif action == "B":
+            reward = random.uniform(-0.5, 0.8)
+        else:
+            reward = random.uniform(-1.0, 0.2)
+        memory.record(action, reward)
+
+    for a, entry in memory.memory.items():
+        print(f"Action {a}: reward={entry.reward:.3f}, count={entry.count}")
+
+
+if __name__ == "__main__":
+    demo_stallion()
+    demo_ant()
+    demo_crow()
+
+
+
+
