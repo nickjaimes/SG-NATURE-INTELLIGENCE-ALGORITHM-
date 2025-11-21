@@ -1,0 +1,20 @@
+docs/STALLION_OPS.md (short version)
+# 🐎 STALLION OPS Algorithm – Overview
+
+STALLION OPS is a **system operations controller** that manages performance like a war stallion:
+
+- `SPRINT` – short bursts of maximum speed for critical operations  
+- `PACE` – default stable performance for continuous work  
+- `RECOVER` – cooling state to protect hardware and risk exposure  
+
+Key Inputs:
+- CPU load & temperature  
+- Memory usage  
+- I/O pressure  
+- Risk index (for financial / cyber contexts)  
+- Mission priority (NORMAL / IMPORTANT / CRITICAL)
+
+Output:
+- Chosen state + scheduler / power adjustments.
+
+Implementation: [`src/stallion_ops.py`](../src/stallion_ops.py).
